@@ -151,7 +151,7 @@ if __name__ == "__main__":
         workers=args.workers,
         solver=args.solver,
         biomass_bounds=biomass_bounds_tuple,
-        analyze_contributions=args.analyze_contributions
-        use_net_production_dict=args.use_net_production_dict
+        analyze_contributions=args.analyze_contributions,
+        use_net_production_dict=args.use_net_production_dict,
         fresh_start=args.fresh_start
     )
