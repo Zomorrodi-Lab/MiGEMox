@@ -1,8 +1,0 @@
-README.md
-pyproject.toml
-microbiome_gem_modeling.egg-info/PKG-INFO
-microbiome_gem_modeling.egg-info/SOURCES.txt
-microbiome_gem_modeling.egg-info/dependency_links.txt
-microbiome_gem_modeling.egg-info/requires.txt
-microbiome_gem_modeling.egg-info/top_level.txt
-migemox/__init__.py

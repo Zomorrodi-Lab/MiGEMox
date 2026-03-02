@@ -1,3 +1,7 @@
 cplex/
 notes2/
 .venv/
+**/__pycache__
+*.egg-info/
+.vscode/
+.ipynb_checkpoints

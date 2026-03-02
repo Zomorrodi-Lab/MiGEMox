@@ -2,15 +2,22 @@
 I/O Utilities for MiGEMox Pipeline
 
 This module provides functions for loading input data (e.g., abundance files),
-and preparing model data for saving to disk. It centralizes file operations
+preparing model data for saving to disk, and general pipeline helpers such as
+memory usage tracking. It centralizes file operations and utility functions
 to improve code organization and reusability.
 """
 
+from datetime import timezone
 import pandas as pd
+import psutil
 import os
 import re
+from cobra_structural import Model as StructuralModel
 from cobra.io import load_matlab_model
 from cobra.util import create_stoichiometric_matrix
+from cobra.io import read_sbml_model, write_sbml_model
+from cobra_structural.io import read_sbml_model as read_structural_sbml_model
+from cobra_structural.io import write_sbml_model as write_structural_sbml_model
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
@@ -18,6 +25,193 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from scipy.sparse import csr_matrix
+from scipy.sparse import save_npz, load_npz
+import pickle
+import sys
+from datetime import datetime
+
+def log_with_timestamp(message: str):
+    """
+    Logs a message with the current UTC timestamp.
+
+    Args:
+        message: The message to log.
+    """
+    current_time = datetime.now(tz=timezone.utc)
+    print(f"[{current_time}] {message}")
+
+def pickle_structural_model(model: StructuralModel, file_path: str):
+    """
+    Pickle a cobra StructuralModel to a file.
+
+    Args:
+        model: The cobra StructuralModel to pickle.
+        file_path: The path to the file where the model should be pickled.
+    """
+    log_with_timestamp(f"Pickling StructuralModel to {file_path}...")
+    with open(file_path, 'wb') as f:
+        pickle.dump(model, f)
+    log_with_timestamp(f"Pickling complete.")
+
+def load_structural_model_pickle(file_path: str) -> StructuralModel:
+    """
+    Load a pickled cobra StructuralModel from a file.
+
+    Args:
+        file_path: The path to the file from which to load the model.
+    Returns:
+        The loaded cobra StructuralModel.
+    """
+    log_with_timestamp(f"Loading StructuralModel from pickle {file_path}...")
+    with open(file_path, 'rb') as f:
+        model = pickle.load(f)
+    log_with_timestamp(f"Loading complete.")
+    return model
+
+def save_model_and_constraints(model, C, d, dsense, ctrs, model_name, out_dir, save_format="sbml"):
+    """
+    Save a cobra model and its associated coupling constraints to disk.
+
+    This function works on both cobra.Model and cobra.StructuralModel objects.
+
+    You can specify the save format for the model to be SBML or pickle. Pickle only works on StructuralModel objects.
+    
+    :param model: A cobra Model or StructuralModel object
+    :param C: Coupling matrix
+    :param d: Right-hand side of coupling constraints
+    :param dsense: Sense of coupling constraints
+    :param ctrs: Names of coupling constraints
+    :param model_name: Name of the model
+    :param out_dir: Directory to save the model and constraints
+    :param save_format: "sbml" or "pickle"
+    """
+
+    base = os.path.join(out_dir, model_name)
+
+    # save GEM
+    if save_format == "pickle":
+        if not isinstance(model, StructuralModel):
+            raise ValueError("Pickle format only supported for StructuralModel objects.")
+        # 1) GEM → pickle
+        pickle_path = base + ".pkl"
+        pickle_structural_model(model, pickle_path)
+
+    elif save_format == "sbml":
+        # 1) GEM → SBML
+        sbml_path = base + ".sbml"
+        if isinstance(model, StructuralModel):
+            log_with_timestamp(f"Writing StructuralModel to SBML at {sbml_path}...")
+            write_structural_sbml_model(model, sbml_path)
+            log_with_timestamp(f"Writing complete.")
+        else:
+            log_with_timestamp(f"Writing Model to SBML at {sbml_path}...")
+            write_sbml_model(model, sbml_path)
+            log_with_timestamp(f"Writing complete.")
+
+    # Save constraints
+    log_with_timestamp(f"Saving coupling constraints to {base}_C.npz and {base}_constraints.npz...")
+    C = csr_matrix(C)
+    save_npz(base + "_C.npz", C)
+
+    np.savez(
+        base + "_constraints.npz",
+        d=d,
+        dsense=dsense,
+        ctrs=ctrs,
+    )
+    log_with_timestamp(f"Saving constraints complete.")
+
+def load_model_and_constraints(model_name, model_dir, model_type="standard",  save_format="sbml"):
+    """
+    Load a COBRA model and its associated coupling constraints from disk.
+
+    This function works on both cobra.Model and cobra.StructuralModel objects. The type of model to load is specified by the `model_type` parameter.
+    
+    :param model_name: The name of the model to load
+    :param model_dir: The directory where the model and constraints are stored
+    :param model_type: "standard" for cobra.Model, "structural" for cobra.StructuralModel
+    :param save_format: "sbml" or "pickle"
+    :return: A tuple of (model, C, d, dsense, ctrs)
+    """
+    base = os.path.join(model_dir, model_name)
+
+    if save_format == "pickle":
+        if model_type != "structural":
+            raise ValueError("Pickle format only supported for StructuralModel objects.")
+        # Load GEM from pickle
+        model = load_structural_model_pickle(base + ".pkl")
+
+
+    elif save_format == "sbml":
+        if model_type == "standard":
+            # Load GEM from SBML
+            log_with_timestamp(f"Loading Model from SBML at {base + '.sbml'}...")
+            model = read_sbml_model(base + ".sbml")
+            log_with_timestamp(f"Loading complete.")
+        elif model_type == "structural":
+            # Load StructuralModel from SBML
+            log_with_timestamp(f"Loading StructuralModel from SBML at {base + '.sbml'}...")
+            model = read_structural_sbml_model(base + ".sbml")
+            log_with_timestamp(f"Loading complete.")
+        else:
+            raise ValueError(f"Unknown model_type: {model_type}")
+
+    # Load constraints
+    log_with_timestamp(f"Loading coupling constraints from {base + '_C.npz'} and {base + '_constraints.npz'}...")
+    C = load_npz(base + "_C.npz")
+    data = np.load(base + "_constraints.npz", allow_pickle=True)
+    log_with_timestamp(f"Loading constraints complete.")
+    d = data["d"]
+    dsense = data["dsense"]
+    ctrs = data["ctrs"]
+
+    return model, C, d, dsense, ctrs
+
+def total_size(o, seen=None):
+    """
+    Check total size of a Python dict
+    
+    Args:
+        o: the dict to check size of
+        seen: set of seen object ids to avoid double counting (always leave as default when calling this function)
+    """
+
+    if seen is None:
+        seen = set()
+    oid = id(o)
+    if oid in seen:
+        return 0
+    seen.add(oid)
+    size = sys.getsizeof(o)
+    if isinstance(o, dict):
+        size += sum(total_size(v, seen) for v in o.values())
+    elif isinstance(o, (list, tuple, set)):
+        size += sum(total_size(i, seen) for i in o)
+    return size
+
+def ensure_parent_dir(file_path: str):
+    """
+    Ensure a parent directory to a file path exists.
+
+    This function creates the directory if it does not exist.
+
+    Args:
+        file_path: the path to the file you want to ensure exists
+    """
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:  # This will be empty string if file is in current directory
+        os.makedirs(parent_dir, exist_ok=True)
+
+def print_memory_usage(stage=""):
+    """
+    Prints the current memory usage (in MB) of the running Python process.
+
+    Args:
+        stage (str): Description of the pipeline stage.
+    """
+    process = psutil.Process(os.getpid())
+    mem_mb = process.memory_info().rss / (1024 ** 2)
+    print(f"[MEMORY] {stage}: {mem_mb:.2f} MB")
 
 def get_individual_size_name(abun_file_path: str, mod_path: str) -> tuple:
     """
@@ -209,7 +403,7 @@ def extract_positive_net_prod_constraints(csv_path: str, threshold: float = 0) -
     """
     df = pd.read_csv(csv_path, index_col=0)
     # keep only rows with at least one non-zero flux
-    mask = (df.iloc[:, 1:].abs() > threshold).any(axis=1)
+    mask = (df.iloc[:, 0:].abs() > threshold).any(axis=1)
     filtered = df[mask]
     filtered.index = filtered.index.to_series().apply(lambda x: x.split("[")[0].replace("EX_", ""))
     return filtered.dropna(how="all", axis=1).to_dict(orient="index")

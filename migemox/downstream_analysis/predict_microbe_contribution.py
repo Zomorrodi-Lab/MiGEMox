@@ -12,6 +12,7 @@ from migemox.pipeline.constraints import apply_couple_constraints
 from glob import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
+from migemox.pipeline.io_utils import load_model_and_constraints
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,17 +27,32 @@ def _load_model_safely(model_path: str) -> Optional[object]:
         logger.error(f"Failed to load model {Path(model_path).stem}: {str(e)}")
         return None
     
-def _get_exchange_reactions(model: object, mets_list: Optional[List[str]] = None) -> List[str]:
-    """Extract relevant exchange reactions from model"""
+def _get_exchange_reactions(model: object, mets_list: Optional[List[str]] = None, mets_as_iex=False) -> List[str]:
+    """
+    Extract relevant exchange reactions from model
+    
+    if mets_as_iex is set to True, assumes mets_list metabolites have been formatted like 
+    this prior to passing into this function.
+
+    ```python
+    [f"IEX_{m}[u]tr" for m in mets_list]
+    ```
+
+    Otherwise, assumes metabolites just have metabolite ID
+    """
     all_iex = [rxn.id for rxn in model.reactions if 'IEX_' in rxn.id]
     if not mets_list:
         # All reactions containing 'IEX_'
         return all_iex
     else:
         # Only reactions matching provided metabolites
-        return [rxn for rxn in all_iex if any(f"IEX_{m}[u]tr" in rxn for m in mets_list)]
+        if mets_as_iex:
+            return [rxn for rxn in all_iex if any(m in rxn for m in mets_list)]
+        else:
+            return [rxn for rxn in all_iex if any(f"IEX_{m}[u]tr" in rxn for m in mets_list)]
+        
 
-def _perform_fva(model: object, model_path: str, rxns_in_model: List[str], solver: str) -> Tuple[Dict[str, float], Dict[str, float]]:
+def _perform_fva(model: object, rxns_in_model: List[str], solver: str) -> Tuple[Dict[str, float], Dict[str, float]]:
     """Perform flux variability analysis with fallbacks"""
     try:
         fva_result = flux_variability_analysis(
@@ -95,12 +111,19 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
     Returns:
         Dict with model results or None if failed
     """
-    model_path = os.path.join(diet_mod_dir, model_file)
     model_name = model_file.stem
     try:
-        model = _load_model_safely(model_path)
+        model, C, d, dsense, ctrs = load_model_and_constraints(
+            model_name, diet_mod_dir, model_type="standard", save_format="sbml")
+        
+        model_data = {
+            'C': C,
+            'd': d,
+            'dsense': dsense,
+            'ctrs': ctrs
+        }
         model.solver = solver
-        model = apply_couple_constraints(model, model_path)
+        model = apply_couple_constraints(model, model_data)
         if model is None: return None
             
         min_fluxes, max_fluxes, rxns = {}, {}, []
@@ -116,17 +139,17 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
                     orig_lb = ex_rxn.lower_bound
                     ex_rxn.lower_bound = model_fluxes[model_name.split('_')[-1]]
                     # Perform FVA on only IEX rxns associated with current metabolite
-                    minf, maxf = _perform_fva(model, model_path, iex_rxn_ids, solver)
+                    minf, maxf = _perform_fva(model, iex_rxn_ids, solver)
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
                     ex_rxn.lower_bound = orig_lb
         else:
-            rxns_in_model = _get_exchange_reactions(model, mets_list)
+            rxns_in_model = _get_exchange_reactions(model, mets_list, mets_as_iex=True)
             if not rxns_in_model:
                 logger.warning(f"No exchange reactions found in model {model_name}")
                 return None
-            min_fluxes, max_fluxes = _perform_fva(model, model_path, rxns_in_model, solver)
+            min_fluxes, max_fluxes = _perform_fva(model, rxns_in_model, solver)
             rxns = rxns_in_model
         
         return {

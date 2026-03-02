@@ -1,8 +1,0 @@
-cobra==0.29.1
-cplex>=22.1.2.0
-docplex==2.29.245
-numpy==1.26.4
-optlang>=1.8.3
-pandas==2.2.3
-scipy>=1.15.3
-tqdm>=4.67.1
