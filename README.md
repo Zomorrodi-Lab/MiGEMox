@@ -1,11 +1,13 @@
-# Microbiome-GEM-Modeling
+# MiGEMox
 
-Microbiome-GEM-Modeling is a computational framework for constructing, analyzing, and simulating genome-scale metabolic models (GEMs) of microbial communities. This project enables researchers to integrate metagenomic data, reconstruct metabolic networks, and perform in silico experiments to investigate microbiome function and interactions.
+MiGEMox is a computational framework for analyzing and simulating genome-scale metabolic models (GEMs) of microbial communities. This project enables researchers to perform in silico experiments to investigate microbiome function and interactions.
+
+## Pre-Release Notes
+
+This project is cuurrently under development and may contain bugs.
 
 ## Features
 
-- Automated reconstruction of GEMs from annotated genomes
-- Integration of metagenomic abundance data
 - Community-level metabolic modeling and simulation
 - Support for constraint-based modeling with CPLEX
 - Modular pipeline for reproducible analyses
@@ -91,8 +93,18 @@ You can use Microbiome-GEM-Modeling directly in your Python scripts:
 
 1. **Clone and install the package:**
     ```bash
-    git clone https://github.com/aarushgarg1110/Microbiome-GEM-Modeling.git
-    cd Microbiome-GEM-Modeling
+    # activate your environment where you want to use MiGEMox
+    git clone https://github.com/Zomorrodi-Lab/MiGEMox.git
+    cd MiGEMox
+    pip install -e .
+    ```
+
+2. **Also clone and install the structural COBRApy model dependency:**
+    ```bash
+    # Do this outside the MiGEMox folder
+    # activate your environment where you want to use MiGEMox
+    git clone https://github.com/nsyousef/cobrapy.git
+    cd cobrapy
     pip install -e .
     ```
 
@@ -114,6 +126,7 @@ You can use Microbiome-GEM-Modeling directly in your Python scripts:
         fresh_start=False
     )
     ```
+
     You should only need to specify --abun_filepath (-a), --mod_filepath (-m), --diet_filepath (-d). The rest have default parameters.
     -  workers: int = 1
     -  solver: str = 'cplex',
@@ -125,6 +138,3 @@ You can use Microbiome-GEM-Modeling directly in your Python scripts:
     -  use_net_production_dict: bool = False
    
 For further details on workflow and usage, see [Summary.md](./Summary.md).
-
-
-
