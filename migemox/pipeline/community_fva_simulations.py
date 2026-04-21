@@ -92,6 +92,12 @@ def run_single_fva(sample_name: str, ex_mets: list, model_dir: str, diet_constra
             diet_model_name = _optimize_and_save_model(model, model_data, sample_name, res_path)
 
         # Step 5: Perform flux variability analysis
+        # reload model to ensure results are consistent between fresh start and start from checkpoint
+        # otherwise there are numerical differences due to loss of precision from loading the saved
+        # model vs. using the one stored in memory
+        model, C, d, dsense, ctrs = load_model_and_constraints(
+            diet_model_name, diet_model_dir, model_type="standard", save_format="sbml")
+        model_data = {'C': C, 'd': d, 'dsense': dsense, 'ctrs': ctrs}
         net_production_samp, net_uptake_samp, min_net_fecal_excretion, raw_fva_results = _perform_fva(
             model, ex_mets, sample_name, model_data)
         return sample_name, net_production_samp, net_uptake_samp, min_net_fecal_excretion, raw_fva_results
