@@ -29,6 +29,15 @@ from scipy.sparse import save_npz, load_npz
 import pickle
 import sys
 from datetime import datetime
+import json
+
+def load_json(path: str | Path):
+    with open(str(path), 'r') as f:
+        return json.load(f)
+
+def save_json(obj, path: str | Path):
+    with open(str(path), 'w') as f:
+        json.dump(obj, f)
 
 def log_with_timestamp(message: str):
     """

@@ -19,27 +19,50 @@ from migemox.pipeline.io_utils import collect_flux_profiles, extract_positive_ne
 from migemox.downstream_analysis.predict_microbe_contribution import predict_microbe_contributions
 from datetime import datetime, timezone
 from migemox.pipeline.io_utils import print_memory_usage
-import json
 
 def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: str,
                          res_filepath: str = 'Results', workers: int = 1, solver: str = 'cplex',
                          biomass_bounds: tuple = (0.4, 1.0), contr_filepath: str = 'Contributions',
                          analyze_contributions: bool = False, fresh_start: bool = False,
-                         use_net_production_dict: bool = False):
+                         use_net_production_dict: bool = False,
+                         method: str="biomass",
+                         precision: str | None=None,
+                         fraction: float = 0.99):
     """
     Main function to run the MiGEMox pipeline.
 
     Args:
-        abun_filepath: Path to the abundance CSV file (MUST be normalized before running MiGEMox).
+        abun_filepath: Path to the abundance CSV file (MUST be normalized before running MiGEMox; 
+        must also have the column for species names have a header of "X").
         mod_filepath: Path to the directory containing organism model files (.mat).
-        res_filepath: Base directory for saving output models and results.
-        contr_filepath: Directory for saving strain contribution analysis results.
-                          If None, default is 'Contributions'
         diet_filepath: Path to the VMH diet file.
+        res_filepath: Base directory for saving output models and results.
         workers: Number of parallel workers to use for sample processing.
         solver: Optimization solver to use (e.g., 'cplex', 'gurobi').
         biomass_bounds: Tuple (lower, upper) for community biomass reaction.
+        contr_filepath: Directory for saving strain contribution analysis results.
+                          If None, default is 'Contributions'
         analyze_contributions: Boolean, whether to run strain contribution analysis.
+        fresh_start: If True, reruns the pipeline from scratch. If False, reuses any checkpoints that
+        have been precomputed.
+        use_net_production_dict: Fix fecal exchange reaction to 99% of its optimum, and fix biomass
+        reaction to its net production flux and run FVA on IEX reactions under these constraints. (This
+        version was already implemented when I, Nick Yousefi, first started working on MiGEMox).
+        method: The method to use for predicting microbe secretions. Default ('biomass') is to constrain the
+        biomass reaction to at least 99% of its max and run FVA on IEX reactions of metabolites with
+        a positive net secretion. The alternatives are:
+        * `'fecal_max'`: Constrain the fecal exchange reaction for the reaction of interest to be at least
+        `fraction` % of the flux predicted in the raw fecal secretions. Then run FVA on IEX reactions of interest.
+        * 'net_exchange': Constrain the net exchange (v_diet + v_fecal) for each metabolite using
+        FVA-derived signed bounds (min_diet + max_fecal). If positive, impose a secretion-like
+        lower bound; if negative, impose an uptake-like upper bound. Then run FVA on IEX reactions.
+        precision: A format specifier such as ':.2f', ':.3g', '.2f', '.3g', etc. Used when calculating
+        the flux spans to round the min and max fluxes to a certain number of decimal points or sig figs
+        (when predicting microbe contributions).
+        fraction: Only used if `method == 'fecal_max'`. The fraction of the flux predicted in raw fecal
+        secretions to use when maximizing and minimizing IEX reactions. This parmeter is tunable for
+        in case infeasibilities are encountered when running the `fecal_max` method. Set to a lower fraction
+        to avoid infeasibilities. Default is 0.99.
     """
     log_with_timestamp(f"--- MiGEMox Pipeline Started at {datetime.now(tz=timezone.utc)} ---")
     log_with_timestamp(f"Current memory usage: {print_memory_usage()}")
@@ -47,25 +70,13 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
         shutil.rmtree(res_filepath)
         log_with_timestamp("Output directory cleared for fresh start.")
 
-    clean_samp_names, organisms, ex_mets, active_ex_mets, global_rxn_ids = community_gem_builder(
+    clean_samp_names, organisms, ex_mets, active_ex_mets = community_gem_builder(
         abun_filepath=abun_filepath,
         mod_filepath=mod_filepath,
         out_dir=f'{res_filepath}/Personalized_Models',
         workers=workers
     )
 
-    log_with_timestamp("Writing ex_mets to file:")
-    ex_mets_path = os.path.join(res_filepath, 'ex_mets.json')
-    with open(ex_mets_path, 'w') as f:
-        json.dump(ex_mets, f)
-    log_with_timestamp(f"Written to: {ex_mets_path}")
-
-    log_with_timestamp("Writing active_ex_mets to file:")
-    active_ex_mets_path = os.path.join(res_filepath, 'active_ex_mets.json')
-    with open(active_ex_mets_path, 'w') as f:
-        json.dump(active_ex_mets, f)
-    log_with_timestamp(f"Written to: {active_ex_mets_path}")
-    
     # 2. Adapt Diet
     log_with_timestamp(f"--- Stage 1 Finished at {datetime.now(tz=timezone.utc)} ---")
     log_with_timestamp("\n--- Stage 2: Adapting Diet and Running Simulations ---")
@@ -115,7 +126,11 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: s
             res_path=contr_filepath,
             mets_list=mets,
             solver=solver,
-            workers=workers
+            workers=workers,
+            method=method,
+            raw_fva_df=raw_fva_df,
+            precision=precision,
+            fraction=fraction,
         )
         if use_net_production_dict: kwargs['net_production_dict'] = pos_net_prod
         min_fluxes_df, max_fluxes_df, flux_spans_df = predict_microbe_contributions(**kwargs)

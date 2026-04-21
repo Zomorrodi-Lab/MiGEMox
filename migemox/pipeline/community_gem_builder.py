@@ -20,10 +20,11 @@ from cobra.flux_analysis import flux_variability_analysis
 
 import pandas as pd
 import os
+from pathlib import Path
 import re
 import gc
 from migemox.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_microbe_fast, couple_rxn_list_to_rxn
-from migemox.pipeline.io_utils import print_memory_usage, save_model_and_constraints, load_model_and_constraints
+from migemox.pipeline.io_utils import print_memory_usage, save_model_and_constraints, load_model_and_constraints, log_with_timestamp, save_json, load_json
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 from datetime import datetime, timezone
@@ -554,6 +555,7 @@ def build_sample_gem(sample_name: str, global_model_dir: str, abundance_df: pd.D
     save_path = os.path.join(out_dir, f"microbiota_model_samp_{sample_name}.sbml")
     if os.path.exists(save_path):
         print(f"Personalized Model for {sample_name} already exists. Skipping.")
+        return
     print(f"{datetime.now(tz=timezone.utc)}: Personalized model for {sample_name} does not exist.")
     print(f"{datetime.now(tz=timezone.utc)}: Loading global model from {global_model_dir}")
     model, global_C, global_d, global_dsense, global_ctrs = load_model_and_constraints(
@@ -633,7 +635,6 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
         sample_info: the abundance file as a DataFrame
         clean_samp_names: cleaned up sample names
         ex_mets: list of extracellular metabolites found in the model
-        global_rxn_ids: list of reaction IDs in the global model (for sanity checking they are in same order later)
     """
     print(f"{datetime.now(tz=timezone.utc)}: Reading abundance file".center(40, '*'))
 
@@ -650,8 +651,30 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
                 name = 'sample_' + name
         clean_samp_names.append(name)
 
-    global_model, global_C, global_d, global_dsense, global_ctrs, ex_mets, active_ex_mets = build_global_gem(sample_info, mod_filepath)
     samples = sample_info.columns.tolist()
+
+    log_with_timestamp("Checking if global model was already built and saved.")
+    res_filepath = Path(out_filepath).parent
+    global_model_dir = Path(out_filepath) / GLOBAL_MODEL_NAME
+    ex_mets_path = res_filepath / 'ex_mets.json'
+    active_ex_mets_path = res_filepath / 'active_ex_mets.json'
+    paths_to_check = [
+        ex_mets_path,
+        active_ex_mets_path,
+        global_model_dir / f'{GLOBAL_MODEL_NAME}.pkl',
+        global_model_dir / f'{GLOBAL_MODEL_NAME}_constraints.npz',
+        global_model_dir / f'{GLOBAL_MODEL_NAME}_C.npz',
+    ]
+
+    if all(pth.exists() for pth in paths_to_check):
+        log_with_timestamp("Global model already built. Using pre-existing one.")
+
+        ex_mets = load_json(ex_mets_path)
+        active_ex_mets = load_json(active_ex_mets_path)
+
+        return samples, global_model_dir, sample_info, clean_samp_names, ex_mets, active_ex_mets
+
+    global_model, global_C, global_d, global_dsense, global_ctrs, ex_mets, active_ex_mets = build_global_gem(sample_info, mod_filepath)
 
     # print dimensions of matrices for debugging
     print("Dimensions of matrices for global model:")
@@ -661,11 +684,7 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
     print(f"global_dsense: {global_dsense.shape}")
     print(f"global_ctrs: {global_ctrs.shape}")
 
-    # get list of reactions as a sanity check
-    global_rxn_ids = [r.id for r in global_model.reactions]
-
     # save global model and ex_mets for later, to allow for restarting from this point
-    global_model_dir = os.path.join(out_filepath, GLOBAL_MODEL_NAME)
     print(f"{datetime.now(tz=timezone.utc)}: Writing global model to: {global_model_dir}")
 
     os.makedirs(global_model_dir, exist_ok=True)
@@ -680,11 +699,19 @@ def build_and_save_global_model(abun_filepath: str, mod_filepath: str, out_filep
         out_dir=global_model_dir, 
         save_format="pickle"
     )
+
+    log_with_timestamp("Writing ex_mets to file:")
+    save_json(ex_mets, ex_mets_path)
+    log_with_timestamp(f"Written to: {ex_mets_path}")
+
+    log_with_timestamp("Writing active_ex_mets to file:")
+    save_json(active_ex_mets, active_ex_mets_path)
+    log_with_timestamp(f"Written to: {active_ex_mets_path}")
     
     print(f"{datetime.now(tz=timezone.utc)}: Memory usage before deleting global model")
     print_memory_usage()
 
-    return samples, global_model_dir, sample_info, clean_samp_names, ex_mets, active_ex_mets, global_rxn_ids
+    return samples, global_model_dir, sample_info, clean_samp_names, ex_mets, active_ex_mets
 
 def community_gem_builder(abun_filepath: str, mod_filepath: str, out_dir: str, workers=1) -> tuple:
     """
@@ -710,7 +737,7 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_dir: str, w
     """
 
     print(f"{datetime.now(tz=timezone.utc)}: Starting MiGeMox pipeline".center(40, '*'))
-    samples, global_model_dir, sample_info, clean_samp_names, ex_mets, active_ex_mets, global_rxn_ids = build_and_save_global_model(
+    samples, global_model_dir, sample_info, clean_samp_names, ex_mets, active_ex_mets = build_and_save_global_model(
         abun_filepath, 
         mod_filepath, 
         out_dir, 
@@ -725,14 +752,14 @@ def community_gem_builder(abun_filepath: str, mod_filepath: str, out_dir: str, w
     print(f"{datetime.now(tz=timezone.utc)}: Building sample GEMs")
 
     # build sample GEMs sequentially:
-    for s in samples:
-        build_sample_gem(s, global_model_dir, sample_info, abun_filepath, out_dir)
+    # for s in samples:
+    #     build_sample_gem(s, global_model_dir, sample_info, abun_filepath, out_dir)
 
     # build sample GEMs in parallel
-    # with ProcessPoolExecutor(max_workers=workers) as executor:
-    #     futures = [executor.submit(build_sample_gem, s, global_model_dir, sample_info, abun_filepath, out_dir)
-    #                for s in samples]
-    #     for f in tqdm(futures, desc='Building sample GEMs'):
-    #         f.result()
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(build_sample_gem, s, global_model_dir, sample_info, abun_filepath, out_dir)
+                   for s in samples]
+        for f in tqdm(futures, desc='Building sample GEMs'):
+            f.result()
     print(f"{datetime.now(tz=timezone.utc)}: Finished building Sample GEMs") 
-    return clean_samp_names, sample_info.index.tolist(), ex_mets, active_ex_mets, global_rxn_ids
+    return clean_samp_names, sample_info.index.tolist(), ex_mets, active_ex_mets

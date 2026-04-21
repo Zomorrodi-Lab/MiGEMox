@@ -6,6 +6,69 @@ This file contains generic utilities for handling models.
 
 from cobra import Model
 from cobra_structural import Model as StructuralModel
+import time
+
+def reset_solver(model: Model, solver: str, temp_solver: str | None=None):
+    """
+    Reset a model's solver object. This function works by setting the model's solver to a different
+    solver temporarily, then switching it back to the original solver, forcing COBRApy to create
+    a new solver object without any state.
+
+    The default temp_solver is 'glpk', but if the desired solver is 'glpk', the solver is temporarily 
+    switched to 'glpk_exact' instead. If you as the user would like to control which temporary solver
+    is used, you can do so by setting `temp_solver` to the name of the solver you want to temporarily
+    switch to.
+
+    This function modifies the model in place. It does not return a new model.
+
+    :param model: The model object for which to reset the solver. Must not be a `StructuralModel`, as these
+    do not contain solvers.
+    :param solver: The name of the current solver in the model, which will be reset.
+    :param temp_solver: The name of the temporary solver to switch to to force a solver reset. If set
+    to `None`, defaults to using `'glpk'` as the temp solver unless `solver` is set to `'glpk``, in which
+    case it uses `'glpk_exact'`.
+    """
+    # Resolve default temp_solver before the ValueError check
+    if temp_solver is None:
+        if solver == "glpk":
+            temp_solver = "glpk_exact"
+        else:
+            temp_solver = "glpk"
+
+    # Validate that temp_solver and solver are not the same
+    if temp_solver == solver:
+        raise ValueError(
+            f"temp_solver '{temp_solver}' cannot be the same as solver '{solver}'. "
+            f"The temporary solver must be a different solver type in order to force "
+            f"COBRApy to create a new solver object on the switch back."
+        )
+
+    # Record solver id before reset
+    id_before = id(model.solver)
+
+    # Switch to temp solver, then back to the original solver
+    # This forces COBRApy to create a brand new solver object
+    model.solver = temp_solver
+    model.solver = solver
+
+    # Record solver id after reset
+    id_after = id(model.solver)
+
+    # Confirm that a new solver object was actually created
+    if id_before == id_after:
+        # try again, with some sleep time
+        id_before2 = id(model.solver)
+        model.solver = temp_solver
+        time.sleep(0.3)
+        model.solver = solver
+        id_after2 = id(model.solver)
+
+        if id_before2 == id_after2:
+            raise RuntimeError(
+                f"Solver reset failed: the solver object id did not change after switching "
+                f"from '{solver}' -> '{temp_solver}' -> '{solver}'. "
+                f"id_before={id_before}, id_after={id_after}."
+            )
 
 def find_biomass_candidates(
         model: Model | StructuralModel,
